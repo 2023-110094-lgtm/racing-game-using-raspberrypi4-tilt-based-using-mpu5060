@@ -1,0 +1,411 @@
+import pygame
+import sys
+import time
+import random
+import math
+import struct
+
+try:
+    import smbus2 as smbus
+except ImportError:
+    try:
+        import smbus
+    except ImportError:
+        smbus = None  # Will fall back to keyboard
+
+class MPU6050Driver:
+
+    MPU6050_ADDR    = 0x68
+    PWR_MGMT_1      = 0x6B
+    ACCEL_XOUT_H    = 0x3B
+    GYRO_XOUT_H     = 0x43
+    ACCEL_CONFIG    = 0x1C
+    GYRO_CONFIG     = 0x1B
+    ACCEL_SCALE     = 16384.0  # ±2g range
+    GYRO_SCALE      = 131.0    # ±250°/s range
+
+    def __init__(self, bus_num=1, address=0x68):
+        if smbus is None:
+            raise ImportError("smbus2 not installed. Run: pip3 install smbus2")
+        self.bus     = smbus.SMBus(bus_num)
+        self.address = address
+        # Wake up the sensor (clear sleep bit)
+        self.bus.write_byte_data(self.address, self.PWR_MGMT_1, 0x00)
+        time.sleep(0.1)
+        print("MPU6050 initialized via smbus2")
+
+    def _read_raw(self, reg):
+        """Read a signed 16-bit value from two consecutive registers."""
+        high = self.bus.read_byte_data(self.address, reg)
+        low  = self.bus.read_byte_data(self.address, reg + 1)
+        val  = (high << 8) | low
+        if val >= 0x8000:
+            val -= 0x10000
+        return val
+
+    def get_accel_data(self):
+        """Returns acceleration in g (gravitational units)."""
+        return {
+            'x': self._read_raw(self.ACCEL_XOUT_H)     / self.ACCEL_SCALE,
+            'y': self._read_raw(self.ACCEL_XOUT_H + 2) / self.ACCEL_SCALE,
+            'z': self._read_raw(self.ACCEL_XOUT_H + 4) / self.ACCEL_SCALE,
+        }
+
+    def get_gyro_data(self):
+        """Returns gyroscope in degrees/second."""
+        return {
+            'x': self._read_raw(self.GYRO_XOUT_H)     / self.GYRO_SCALE,
+            'y': self._read_raw(self.GYRO_XOUT_H + 2) / self.GYRO_SCALE,
+            'z': self._read_raw(self.GYRO_XOUT_H + 4) / self.GYRO_SCALE,
+        }
+
+    def close(self):
+        self.bus.close()
+
+class ComplementaryFilter:
+
+    def __init__(self, alpha=0.96, dt=1/60):
+        self.alpha = alpha
+        self.dt    = dt
+        self.roll  = 0.0
+        self.pitch = 0.0
+
+    def update(self, accel, gyro):
+        ax, ay, az = accel['x'], accel['y'], accel['z']
+        gx, gy     = gyro['x'],  gyro['y']
+
+        accel_roll  = math.degrees(math.atan2(ay, az))
+        accel_pitch = math.degrees(math.atan2(-ax, math.sqrt(ay**2 + az**2)))
+
+        self.roll  = self.alpha * (self.roll  + gx * self.dt) + (1 - self.alpha) * accel_roll
+        self.pitch = self.alpha * (self.pitch + gy * self.dt) + (1 - self.alpha) * accel_pitch
+
+        return self.roll, self.pitch
+
+    def reset(self):
+        self.roll  = 0.0
+        self.pitch = 0.0
+
+pygame.init()
+
+SCREEN_WIDTH  = 800
+SCREEN_HEIGHT = 600
+FPS           = 60
+
+BLACK     = (0,   0,   0)
+WHITE     = (255, 255, 255)
+GRAY      = (100, 100, 100)
+DARK_GRAY = (50,  50,  50)
+RED       = (220, 20,  20)
+BLUE      = (30,  144, 255)
+YELLOW    = (255, 215, 0)
+GREEN     = (34,  139, 34)
+ORANGE    = (255, 140, 0)
+
+TILT_DEAD_ZONE        = 5.0
+TILT_THRESHOLD_LIGHT  = 15.0
+TILT_THRESHOLD_MEDIUM = 30.0
+TILT_THRESHOLD_HARD   = 45.0
+
+class Car:
+    def __init__(self, x, y):
+        self.x             = x
+        self.y             = y
+        self.width         = 40
+        self.height        = 70
+        self.speed         = 0
+        self.max_speed     = 12
+        self.acceleration  = 0.3
+        self.braking       = 0.5
+        self.friction      = 0.1
+        self.lane_position = 0
+        self.target_x      = x
+        self.smooth_factor = 0.2
+
+    def update(self, tilt_roll, tilt_pitch):
+        if abs(tilt_roll) < TILT_DEAD_ZONE:
+            self.lane_position *= 0.9
+        elif tilt_roll > TILT_THRESHOLD_HARD:
+            self.lane_position = min(self.lane_position + 0.08, 1.2)
+        elif tilt_roll > TILT_THRESHOLD_MEDIUM:
+            self.lane_position = min(self.lane_position + 0.05, 1.2)
+        elif tilt_roll > TILT_THRESHOLD_LIGHT:
+            self.lane_position = min(self.lane_position + 0.03, 1.2)
+        elif tilt_roll < -TILT_THRESHOLD_HARD:
+            self.lane_position = max(self.lane_position - 0.08, -1.2)
+        elif tilt_roll < -TILT_THRESHOLD_MEDIUM:
+            self.lane_position = max(self.lane_position - 0.05, -1.2)
+        elif tilt_roll < -TILT_THRESHOLD_LIGHT:
+            self.lane_position = max(self.lane_position - 0.03, -1.2)
+
+        self.target_x = SCREEN_WIDTH // 2 + int(self.lane_position * 120)
+        self.x       += (self.target_x - self.x) * self.smooth_factor
+
+        if tilt_pitch < -10:
+            self.speed = min(self.speed + self.acceleration, self.max_speed)
+        elif tilt_pitch > 10:
+            self.speed = max(self.speed - self.braking, 0)
+        else:
+            self.speed = max(self.speed - self.friction, 0)
+
+    def draw(self, screen):
+        pygame.draw.rect(screen, RED,
+            (self.x - self.width//2, self.y - self.height//2,
+             self.width, self.height), border_radius=5)
+        pygame.draw.rect(screen, BLUE,
+            (self.x - self.width//2 + 5, self.y - self.height//2 + 10,
+             self.width - 10, 20), border_radius=3)
+        wo = 15
+        for dx in [-self.width//2, self.width//2]:
+            for dy in [-wo, wo]:
+                pygame.draw.circle(screen, BLACK,
+                    (int(self.x + dx), int(self.y + dy)), 6)
+
+class Obstacle:
+    def __init__(self, x, y, obstacle_type='car'):
+        self.x      = x
+        self.y      = y
+        self.width  = 40
+        self.height = 60
+        self.type   = obstacle_type
+        self.passed = False
+
+    def update(self, speed):
+        self.y += speed + 2
+
+    def draw(self, screen):
+        if self.type == 'car':
+            pygame.draw.rect(screen, ORANGE,
+                (self.x - self.width//2, self.y - self.height//2,
+                 self.width, self.height), border_radius=5)
+            pygame.draw.rect(screen, DARK_GRAY,
+                (self.x - self.width//2 + 5, self.y - self.height//2 + 5,
+                 self.width - 10, 15))
+        elif self.type == 'cone':
+            points = [
+                (self.x,      self.y - 20),
+                (self.x - 15, self.y + 20),
+                (self.x + 15, self.y + 20),
+            ]
+            pygame.draw.polygon(screen, ORANGE, points)
+            pygame.draw.polygon(screen, BLACK,  points, 2)
+
+    def collides_with(self, car):
+        return (abs(self.x - car.x) < (self.width  + car.width)  / 2 and
+                abs(self.y - car.y) < (self.height + car.height) / 2)
+
+class RacingGame:
+    def __init__(self):
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Tilt Racing Game - MPU6050")
+        self.clock  = pygame.time.Clock()
+
+        self.car       = Car(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 120)
+        self.obstacles = []
+        self.road_y    = 0
+        self.score     = 0
+        self.game_over = False
+        self.paused    = False
+
+        print("\n Initializing Racing Game...")
+        self.sensor_connected = False
+        self.sensor           = None
+        self.filter           = ComplementaryFilter(alpha=0.96, dt=1.0/FPS)
+        self.baseline_x       = 0.0
+        self.baseline_y       = 0.0
+
+        try:
+            self.sensor = MPU6050Driver(bus_num=1, address=0x68)
+            # Calibrate: average 50 readings at rest
+            print(" Calibrating sensor (keep still)...")
+            bx, by = 0.0, 0.0
+            for _ in range(50):
+                a = self.sensor.get_accel_data()
+                bx += a['x']
+                by += a['y']
+                time.sleep(0.01)
+            self.baseline_x   = bx / 50
+            self.baseline_y   = by / 50
+            self.sensor_connected = True
+            print(f" Calibrated! Baseline X={self.baseline_x:.3f}, Y={self.baseline_y:.3f}")
+        except Exception as e:
+            print(f"  Sensor not available: {e}")
+            print(" Falling back to keyboard controls (Arrow keys)")
+
+        self.font_large  = pygame.font.Font(None, 48)
+        self.font_medium = pygame.font.Font(None, 32)
+        self.font_small  = pygame.font.Font(None, 24)
+
+        self.obstacle_timer    = 0
+        self.obstacle_interval = 80
+
+    def spawn_obstacle(self):
+        lanes = [-120, 0, 120]
+        x     = SCREEN_WIDTH // 2 + random.choice(lanes)
+        otype = random.choice(['car', 'car', 'cone'])
+        self.obstacles.append(Obstacle(x, -50, otype))
+
+    def draw_road(self):
+        self.screen.fill(GREEN)
+        road_width = 350
+        pygame.draw.rect(self.screen, GRAY,
+            (SCREEN_WIDTH//2 - road_width//2, 0, road_width, SCREEN_HEIGHT))
+        pygame.draw.line(self.screen, WHITE,
+            (SCREEN_WIDTH//2 - road_width//2, 0),
+            (SCREEN_WIDTH//2 - road_width//2, SCREEN_HEIGHT), 4)
+        pygame.draw.line(self.screen, WHITE,
+            (SCREEN_WIDTH//2 + road_width//2, 0),
+            (SCREEN_WIDTH//2 + road_width//2, SCREEN_HEIGHT), 4)
+
+        self.road_y += self.car.speed
+        if self.road_y > 40:
+            self.road_y = 0
+        for y in range(-40, SCREEN_HEIGHT + 40, 40):
+            pygame.draw.rect(self.screen, YELLOW,
+                (SCREEN_WIDTH//2 - 115, y + self.road_y, 5, 20))
+            pygame.draw.rect(self.screen, YELLOW,
+                (SCREEN_WIDTH//2 + 110, y + self.road_y, 5, 20))
+
+    def draw_hud(self, tilt_roll, tilt_pitch):
+        score_text = self.font_medium.render(f"Score: {self.score}", True, BLACK)
+        self.screen.blit(score_text, (10, 10))
+
+        speed_text = self.font_large.render(
+            f"{int(self.car.speed * 15)} km/h", True, BLACK)
+        self.screen.blit(speed_text, (SCREEN_WIDTH - 200, 10))
+
+        tilt_text = self.font_small.render(
+            f"Roll: {tilt_roll:+.1f}°  Pitch: {tilt_pitch:+.1f}°", True, BLACK)
+        self.screen.blit(tilt_text, (10, SCREEN_HEIGHT - 30))
+
+        status = " MPU6050" if self.sensor_connected else " Keyboard"
+        self.screen.blit(
+            self.font_small.render(status, True, BLACK),
+            (SCREEN_WIDTH - 160, SCREEN_HEIGHT - 30))
+
+    def draw_game_over(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(128)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+
+        t = self.font_large.render("GAME OVER!", True, RED)
+        self.screen.blit(t, t.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 50)))
+
+        s = self.font_medium.render(f"Final Score: {self.score}", True, WHITE)
+        self.screen.blit(s, s.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 10)))
+
+        r = self.font_small.render("Press R to Restart  |  ESC to Quit", True, WHITE)
+        self.screen.blit(r, r.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 70)))
+
+    def reset_game(self):
+        self.car           = Car(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 120)
+        self.obstacles     = []
+        self.score         = 0
+        self.game_over     = False
+        self.road_y        = 0
+        self.obstacle_interval = 80
+        self.filter.reset()
+
+    def run(self):
+        print("\n🏁 Game started!")
+        if self.sensor_connected:
+            print(" Tilt the MPU6050 to control the car")
+            print("   LEFT/RIGHT tilt → Steer")
+            print("   FORWARD tilt   → Accelerate")
+            print("   BACK tilt      → Brake")
+        else:
+            print("  Arrow keys: LEFT/RIGHT = steer, UP = accelerate, DOWN = brake")
+        print("   P = Pause  |  ESC = Quit\n")
+
+        running    = True
+        tilt_roll  = 0.0
+        tilt_pitch = 0.0
+
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        running = False
+                    if event.key == pygame.K_r and self.game_over:
+                        self.reset_game()
+                    if event.key == pygame.K_p:
+                        self.paused = not self.paused
+
+            if self.paused:
+                pt = self.font_large.render("PAUSED", True, WHITE)
+                self.screen.blit(pt, pt.get_rect(
+                    center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
+                pygame.display.flip()
+                self.clock.tick(FPS)
+                continue
+
+            if self.sensor_connected and not self.game_over:
+                try:
+                    accel = self.sensor.get_accel_data()
+                    gyro  = self.sensor.get_gyro_data()
+                    # Subtract calibration baseline
+                    accel['x'] -= self.baseline_x
+                    accel['y'] -= self.baseline_y
+                    tilt_roll, tilt_pitch = self.filter.update(accel, gyro)
+                except Exception as e:
+                    print(f"  Sensor read error: {e} — switching to keyboard")
+                    self.sensor_connected = False
+
+       
+            if not self.sensor_connected and not self.game_over:
+                keys = pygame.key.get_pressed()
+                tilt_roll  = -30 if keys[pygame.K_LEFT]  else (30 if keys[pygame.K_RIGHT] else 0)
+                tilt_pitch = -20 if keys[pygame.K_UP]    else (20 if keys[pygame.K_DOWN]  else 0)
+
+
+            if not self.game_over:
+                self.car.update(tilt_roll, tilt_pitch)
+
+                self.obstacle_timer += 1
+                if self.obstacle_timer >= self.obstacle_interval:
+                    self.spawn_obstacle()
+                    self.obstacle_timer    = 0
+                    self.obstacle_interval = max(40, self.obstacle_interval - 1)
+
+                for obstacle in self.obstacles[:]:
+                    obstacle.update(self.car.speed)
+                    if obstacle.collides_with(self.car):
+                        self.game_over = True
+                        print(f"\n Crash! Final Score: {self.score}")
+                    if obstacle.y > SCREEN_HEIGHT:
+                        if not obstacle.passed:
+                            self.score      += 10
+                            obstacle.passed  = True
+                        self.obstacles.remove(obstacle)
+
+            self.draw_road()
+            for obstacle in self.obstacles:
+                obstacle.draw(self.screen)
+            self.car.draw(self.screen)
+            self.draw_hud(tilt_roll, tilt_pitch)
+            if self.game_over:
+                self.draw_game_over()
+
+            pygame.display.flip()
+            self.clock.tick(FPS)
+      if self.sensor and self.sensor_connected:
+            self.sensor.close()
+        pygame.quit()
+        print("\n Thanks for playing!")
+
+if __name__ == "__main__":
+    try:
+        game = RacingGame()
+        game.run()
+    except KeyboardInterrupt:
+        print("\n\n Interrupted by user")
+    except Exception as e:
+        print(f"\n Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        pygame.quit()
+        sys.exit()
