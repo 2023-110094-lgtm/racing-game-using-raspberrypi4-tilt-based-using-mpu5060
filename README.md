@@ -1,2 +1,2 @@
-# racing-game-using-raspberrypi4-tilt-based-using-mpu5060
+# racing-game-using-raspberrypi4-tilt-based-using-mpu6050
 It's a racing game using the raspberry pi 4b that can be control by raspberry pi 4 through tilting
