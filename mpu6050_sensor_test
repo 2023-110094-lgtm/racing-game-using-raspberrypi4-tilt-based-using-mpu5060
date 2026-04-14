@@ -1,0 +1,190 @@
+import smbus2
+import time
+import math
+
+class MPU6050:
+
+    DEVICE_ADDRESS = 0x68
+    
+    PWR_MGMT_1 = 0x6B
+    SMPLRT_DIV = 0x19
+    CONFIG = 0x1A
+    GYRO_CONFIG = 0x1B
+    ACCEL_CONFIG = 0x1C
+    ACCEL_XOUT_H = 0x3B
+    GYRO_XOUT_H = 0x43
+    
+    def __init__(self, bus_number=1):
+
+        self.bus = smbus2.SMBus(bus_number)
+        self.address = self.DEVICE_ADDRESS
+
+        self.accel_offset_x = 0
+        self.accel_offset_y = 0
+        self.accel_offset_z = 0
+        self.gyro_offset_x = 0
+        self.gyro_offset_y = 0
+        self.gyro_offset_z = 0
+
+        self.initialize()
+        
+    def initialize(self):
+
+        self.bus.write_byte_data(self.address, self.PWR_MGMT_1, 0)
+        time.sleep(0.1)
+        
+        self.bus.write_byte_data(self.address, self.SMPLRT_DIV, 9)
+        
+        self.bus.write_byte_data(self.address, self.CONFIG, 0x02)
+        
+        self.bus.write_byte_data(self.address, self.GYRO_CONFIG, 0x00)
+        
+        self.bus.write_byte_data(self.address, self.ACCEL_CONFIG, 0x00)
+        
+        print(" MPU6050 initialized successfully!")
+        
+    def read_raw_accel(self):
+
+            tuple: (ax, ay, az) in raw sensor units
+
+        data = self.bus.read_i2c_block_data(self.address, self.ACCEL_XOUT_H, 6)
+
+        ax = (data[0] << 8) | data[1]
+        ay = (data[2] << 8) | data[3]
+        az = (data[4] << 8) | data[5]
+
+        if ax > 32767: ax -= 65536
+        if ay > 32767: ay -= 65536
+        if az > 32767: az -= 65536
+        
+        return ax, ay, az
+    
+    def read_raw_gyro(self):
+
+        data = self.bus.read_i2c_block_data(self.address, self.GYRO_XOUT_H, 6)
+        
+
+        gx = (data[0] << 8) | data[1]
+        gy = (data[2] << 8) | data[3]
+        gz = (data[4] << 8) | data[5]
+        
+        if gx > 32767: gx -= 65536
+        if gy > 32767: gy -= 65536
+        if gz > 32767: gz -= 65536
+        
+        return gx, gy, gz
+    
+    def read_accel(self):
+
+        ax_raw, ay_raw, az_raw = self.read_raw_accel()
+        
+        ax = (ax_raw - self.accel_offset_x) / 16384.0
+        ay = (ay_raw - self.accel_offset_y) / 16384.0
+        az = (az_raw - self.accel_offset_z) / 16384.0
+        
+        return ax, ay, az
+    
+    def read_gyro(self):
+
+        gx_raw, gy_raw, gz_raw = self.read_raw_gyro()
+        
+        # Convert to degrees/second (±250°/s range, 131 LSB/°/s)
+        gx = (gx_raw - self.gyro_offset_x) / 131.0
+        gy = (gy_raw - self.gyro_offset_y) / 131.0
+        gz = (gz_raw - self.gyro_offset_z) / 131.0
+        
+        return gx, gy, gz
+    
+    def get_tilt_angle(self):
+
+        ax, ay, az = self.read_accel()
+        
+        roll = math.atan2(ay, az) * 180 / math.pi)
+
+        pitch = math.atan2(-ax, math.sqrt(ay*ay + az*az)) * 180 / math.pi
+        
+        return roll, pitch
+    
+    def calibrate(self, samples=100):
+     
+        print("\n Calibrating MPU6050...")
+        print("  Keep sensor FLAT and STILL!")
+        time.sleep(2)
+        
+        accel_sum_x = 0
+        accel_sum_y = 0
+        accel_sum_z = 0
+        gyro_sum_x = 0
+        gyro_sum_y = 0
+        gyro_sum_z = 0
+        
+        for i in range(samples):
+            ax, ay, az = self.read_raw_accel()
+            gx, gy, gz = self.read_raw_gyro()
+            
+            accel_sum_x += ax
+            accel_sum_y += ay
+            accel_sum_z += az
+            gyro_sum_x += gx
+            gyro_sum_y += gy
+            gyro_sum_z += gz
+            
+            if (i + 1) % 20 == 0:
+                print(f"  Progress: {i+1}/{samples}")
+            
+            time.sleep(0.01)
+        
+        # Calculate averages
+        self.accel_offset_x = accel_sum_x // samples
+        self.accel_offset_y = accel_sum_y // samples
+        self.accel_offset_z = (accel_sum_z // samples) - 16384  # Subtract 1g
+        self.gyro_offset_x = gyro_sum_x // samples
+        self.gyro_offset_y = gyro_sum_y // samples
+        self.gyro_offset_z = gyro_sum_z // samples
+        
+        print(" Calibration complete!")
+        print(f"   Accel offsets: ({self.accel_offset_x}, {self.accel_offset_y}, {self.accel_offset_z})")
+        print(f"   Gyro offsets: ({self.gyro_offset_x}, {self.gyro_offset_y}, {self.gyro_offset_z})")
+    
+    def close(self):
+        self.bus.close()
+
+
+if __name__ == "__main__":
+    print("MPU6050 Sensor Test")
+    print("=" * 50)
+    
+    try:
+      
+        sensor = MPU6050()
+        
+        sensor.calibrate()
+        
+        print("\n Reading sensor data...")
+        print("Tilt the sensor and watch values change!")
+        print("Press Ctrl+C to stop\n")
+        
+        while True:
+
+            ax, ay, az = sensor.read_accel()
+            
+
+            gx, gy, gz = sensor.read_gyro()
+            
+
+            roll, pitch = sensor.get_tilt_angle()
+            
+
+            print(f"Accel: X={ax:6.2f}g Y={ay:6.2f}g Z={az:6.2f}g | "
+                  f"Gyro: X={gx:7.1f}°/s Y={gy:7.1f}°/s Z={gz:7.1f}°/s | "
+                  f"Tilt: Roll={roll:6.1f}° Pitch={pitch:6.1f}°", end='\r')
+            
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        print("\n\n Test stopped by user")
+    except Exception as e:
+        print(f"\n Error: {e}")
+    finally:
+        sensor.close()
+        print("Sensor connection closed.")
