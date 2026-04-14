@@ -308,7 +308,7 @@ class RacingGame:
         self.filter.reset()
 
     def run(self):
-        print("\n🏁 Game started!")
+        print("\n Game started!")
         if self.sensor_connected:
             print(" Tilt the MPU6050 to control the car")
             print("   LEFT/RIGHT tilt → Steer")
