@@ -1,0 +1,135 @@
+This guide walks you through everything you need to do before running the main code on your Raspberry Pi. It covers required hardware components, wiring, OS configuration, and all software dependencies. Follow the steps in order, skipping any step is the most common cause of the game failing to start.
+Materials:
+Hardware Requirements:
+Component	Specification	Purpose
+Raspberry Pi 4 Model B	2 GB or 4 GB RAM	Main processing unit — runs the game loop, sensor I/O, and signal processing
+MPU6050 IMU Module	6-DoF (GY-521 breakout)	Provides accelerometer + gyroscope tilt data via I2C
+Female-to-Female Jumper Wires	4 wires minimum	Connect MPU6050 pins to Raspberry Pi GPIO header
+MicroSD Card	16 GB+ Class 10 / A1	Holds Raspberry Pi OS, Python, game files, and libraries
+USB-C Power Adapter	5V / 3A (official Pi PSU)	Stable power — underpowered supplies cause random crashes during gameplay
+HDMI Monitor	Any resolution (micro-HDMI cable)	Display for the racing game — required since pygame needs a screen
+USB Keyboard + Mouse	Any USB/wireless	Initial setup, terminal commands, and keyboard fallback for the game
+Micro-HDMI to HDMI Cable	Pi 4 uses micro-HDMI	Connect Raspberry Pi to the monitor
+
+MPU6050 Wiring:
+MPU6050 Pin	Raspberry Pi Pin	GPIO Name	Notes
+VCC	Pin 1	3.3V Power	 3.3V ONLY — never connect to Pin 2 (5V)
+GND	Pin 6	Ground	Any GND pin works (6, 9, 14, 20, 25, 30, 34, 39)
+SDA	Pin 3	GPIO 2 (SDA1)	I2C data line — must be this exact pin
+SCL	Pin 5	GPIO 3 (SCL1)	I2C clock line — must be this exact pin
+
+GPIO Pin Reference Diagram:
+Function	Pin Name	Pin #	Pin #	Pin Name	Function	Notes
+VCC → MPU6050	3.3V PWR	1	2	5V PWR	DO NOT USE	Connect MPU6050 VCC to Pin 1 (3.3V), never Pin 2 (5V)
+SDA → MPU6050	GPIO 2 (SDA)	3	4	5V PWR	—	Connect MPU6050 SDA to Pin 3
+SCL → MPU6050	GPIO 3 (SCL)	5	6	Ground	GND → MPU6050	Connect MPU6050 GND to Pin 6
+
+Enable I2C & Verify Sensor:
+I2C is disabled by default on Raspberry Pi OS. The game cannot communicate with the MPU6050 until I2C is enabled and the Pi is rebooted.
+
+•	Enable I2C via raspi-config
+1.	Open a terminal on the Raspberry Pi.
+2.	Run the configuration tool:
+ 
+$ sudo raspi-config
+ 
+3.	Navigate to:  Interface Options  →  I2C  →  Enable  →  Yes  →  Finish
+4.	Reboot the Pi when prompted, or manually run:
+ 
+$ sudo reboot
+ 
+
+•	3.2  Verify the MPU6050 is Detected
+After rebooting, confirm the sensor appears at I2C address 0x68:
+
+ 
+# Scan the I2C bus
+$ sudo i2cdetect -y 1
+ 
+
+Expected output: You should see  68  printed in the grid at row 60, column 8. If the entire grid shows dashes (--), recheck your wiring.
+
+ 
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+00:          -- -- -- -- -- -- -- -- -- -- -- -- --   
+10: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --   
+20: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --   
+30: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --   
+40: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --   
+50: -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --   
+60: -- -- -- -- -- -- -- -- 68 -- -- -- -- -- -- --   
+70: -- -- -- -- -- -- -- --                           
+ 
+
+Software Installation:
+There are two ways to do this. 
+Install all required system and Python packages in the order shown below. An active internet connection is required.
+
+1.	Update the OS
+Always update before installing packages to avoid version conflicts:
+
+
+$ sudo apt-get update
+$ sudo apt-get upgrade -y
+
+
+2.	 Install System Packages
+These system-level packages provide I2C support and the tools needed to verify the sensor. Do not skip this step — smbus2 depends on the kernel I2C drivers installed here.
+
+
+3.	$ sudo apt-get install python3-smbus i2c-tools python3-pip -y
+
+
+Package	Why it is needed
+python3-smbus	Provides the kernel-level SMBus/I2C driver bindings for Python
+i2c-tools	Provides i2cdetect and other utilities to verify the sensor is wired correctly
+python3-pip	Python package manager — needed to install smbus2 and pygame
+
+4.	Install Python Libraries
+Install the two required Python packages:
+
+# Required: direct I2C communication with MPU6050
+$ pip3 install smbus2
+
+# Required: game rendering and input handling
+$ pip3 install pygame
+
+
+Python Package	Version Tested	Purpose
+smbus2	0.4.3	Communicates with the MPU6050 at register level over I2C — replaces the broken mpu6050 pip package entirely
+pygame	2.5.2	Renders the racing game window, handles 60 FPS game loop, draws road/car/obstacles, and provides keyboard fallback controls
+math	stdlib	Built into Python — provides atan2() for accelerometer angle calculation inside the complementary filter
+
+5.	Verify Installations
+Confirm both libraries are correctly installed:
+
+
+$ python3 -c "import smbus2; print('smbus2 OK')"
+$ python3 -c "import pygame; print('pygame OK')"
+
+
+Both commands should print OK. If either says  ModuleNotFoundError , re-run the pip3 install command from Step 4.3.
+	The other way is to do this on your raspberry pi command prompt.
+1.	Type ls -a to show all of the projects
+2.	Then type cd “name of file”
+3.	After type ls- a again.
+4.	Try doing pip3 install mpu6050-raspberrypi
+5.	If it says “error: externally-managed environment”
+6.	Do this :
+python3 -m venv venv
+source venv/bin/activate
+pip install “name of the file”-raspberrypi pygame
+7.	Then after installing try running:
+pip freeze > requirements.txt
+ls-a
+8.	It should show a venv on the right side
+9.	Run the code.
+Testing the mpu6050 sensors:
+1.	Copy the mpu6050_sensor_test
+2.	Run it
+3.	If you tilt the mpu6050 and it changes numbers your tilt sensor is ready.
+Running the Game File:
+1.	Copy the main code
+2.	Run it
+3.	If the display shows the game and you try to run it, you’re done and finished.
+
